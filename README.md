@@ -1,7 +1,7 @@
 Files: 
-R Markdown (AMZ—code.rmd), 
-HTML output (AMZ—code.html)
-full analysis report (analysis.pdf)
+- R Markdown (AMZ—code.rmd), 
+- HTML output (AMZ—code.html)
+- full analysis report (analysis.pdf)
 
 This project implements a comprehensive volatility modeling and tail-risk forecasting framework using:
 - Four GARCH-family models: sGARCH, eGARCH, GJR-GARCH, apARCH
