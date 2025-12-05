@@ -1,0 +1,350 @@
+---
+title: "Volatility Modeling & Risk Forecasting (Professional Refinement)"
+author: "Tina Cao"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+rm(list = ls()); gc()
+
+# Load necessary libraries
+library(quantmod)
+library(xts)
+library(tidyverse)
+library(rugarch)
+library(PerformanceAnalytics)
+library(FinTS)
+library(scales)
+library(parallel)
+
+# Set global seed for reproducibility
+set.seed(123)
+```
+
+
+```{r}
+symbol <- "AMZN"
+start_date <- "2019-01-01"
+end_date   <- "2025-01-01"
+
+# Fetch Data
+px <- suppressWarnings(
+  getSymbols(symbol, from = start_date, to = end_date, auto.assign = FALSE, src = "yahoo")
+)
+
+# Calculate Log Returns
+# We use Adjusted Close to account for dividends/splits
+prices <- Ad(px)
+ret <- diff(log(prices))
+ret <- ret[!is.na(ret)] # Remove the first NA created by diff
+
+colnames(ret) <- "Return"
+
+# Visual check of the data
+cat(paste0("Data Range: ", start(ret), " to ", end(ret), "\n"))
+cat(paste0("Total Observations: ", nrow(ret), "\n"))
+
+# Stylized Facts Plots (Figure 1 & 2 in Paper)
+p1 <- ret %>% 
+  fortify() %>% 
+  ggplot(aes(x = Index, y = Return)) +
+  geom_line(color = "#2c3e50", size = 0.3) +
+  labs(title = paste(symbol, "Daily Log Returns"), x = "Date", y = "Log Return") +
+  theme_minimal()
+
+p2 <- ret %>% 
+  fortify() %>% 
+  ggplot(aes(x = Return)) +
+  geom_histogram(aes(y = ..density..), bins = 60, fill = "#3498db", alpha = 0.7) +
+  geom_density(color = "#e74c3c", size = 1) +
+  stat_function(fun = dnorm, args = list(mean = mean(ret), sd = sd(ret)), 
+                linetype = "dashed", color = "black") +
+  labs(title = "Distribution vs Normal (Dashed)", x = "Log Return", y = "Density") +
+  theme_minimal()
+
+print(p1)
+print(p2)
+
+# Arch Effects Test (Table 2 logic)
+cat("\n--- Statistical Diagnostics ---\n")
+print(Box.test(ret, lag = 20, type = "Ljung-Box")) # Autocorrelation
+print(Box.test(ret^2, lag = 20, type = "Ljung-Box")) # ARCH effect
+print(ArchTest(ret, lags = 20)) # Formal ARCH LM test
+```
+
+```{r}
+# Define Model Combinations
+models <- c("sGARCH", "eGARCH", "gjrGARCH", "apARCH")
+dists  <- c("norm", "std", "sstd")
+spec_grid <- crossing(model = models, dist = dists)
+
+# Function to build spec
+get_spec <- function(model_name, dist_name) {
+  ugarchspec(
+    variance.model = list(model = model_name, garchOrder = c(1, 1)),
+    mean.model     = list(armaOrder = c(0, 0), include.mean = TRUE),
+    distribution.model = dist_name
+  )
+}
+
+# Fit all models
+full_fits <- spec_grid %>%
+  mutate(fit_obj = map2(model, dist, function(m, d) {
+    tryCatch({
+      ugarchfit(spec = get_spec(m, d), data = ret, solver = "hybrid")
+    }, error = function(e) NULL)
+  }))
+
+# Extract Statistics for Table 3
+results_table3 <- full_fits %>%
+  mutate(
+    Converged = map_int(fit_obj, ~ if(is.null(.x)) 1 else .x@fit$convergence),
+    LogLik    = map_dbl(fit_obj, ~ if(is.null(.x)) NA else likelihood(.x)),
+    AIC       = map_dbl(fit_obj, ~ if(is.null(.x)) NA else infocriteria(.x)[1]),
+    BIC       = map_dbl(fit_obj, ~ if(is.null(.x)) NA else infocriteria(.x)[2]),
+    # Extract coefficients safely
+    Coefs     = map(fit_obj, ~ if(is.null(.x)) NULL else coef(.x))
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # Persistence calculation varies by model
+    Persistence = case_when(
+      model == "sGARCH" ~ Coefs["alpha1"] + Coefs["beta1"],
+      model == "eGARCH" ~ Coefs["beta1"], # Log-vol persistence
+      model == "gjrGARCH" ~ Coefs["alpha1"] + Coefs["beta1"] + 0.5 * Coefs["gamma1"],
+      model == "apARCH" ~ Coefs["alpha1"] + Coefs["beta1"] + 0.5 * Coefs["gamma1"], # Approx
+      TRUE ~ NA_real_
+    ),
+    Shape = ifelse("shape" %in% names(Coefs), Coefs["shape"], NA),
+    Skew  = ifelse("skew" %in% names(Coefs), Coefs["skew"], NA)
+  ) %>%
+  select(Model = model, Dist = dist, AIC, BIC, Persistence, Shape, Skew) %>%
+  arrange(AIC)
+
+# Display Table 3
+print(knitr::kable(results_table3, digits = 4, caption = "Table 3: Model Estimation Results"))
+```
+
+
+
+```{r}
+# Configuration
+n_start     <- 1000 # Estimation window size
+refit_every <- 50   # Re-estimate parameters every 50 days (Standard Professional Practice)
+window_type <- "moving"
+
+# Function to run rolling forecast and extract density parameters
+run_roll <- function(model, dist, data, n_start, refit_every) {
+  spec <- get_spec(model, dist)
+  
+  # Professional Tip: Use cluster for speed if needed, but for this size single core is safer for stability
+  roll <- tryCatch({
+    ugarchroll(
+      spec, data, n.start = n_start, 
+      refit.every = refit_every, refit.window = window_type,
+      solver = "hybrid", calculate.VaR = FALSE, keep.coef = TRUE
+    )
+  }, error = function(e) return(NULL))
+  
+  if (is.null(roll)) return(NULL)
+  
+  # Extract density parameters (Mu, Sigma, Skew, Shape)
+  # This allows us to calculate EXACT VaR and ES later without simulation
+  df <- as.data.frame(roll)
+  
+  # Clean up column names which can be inconsistent in rugarch
+  colnames(df)[grep("Mu", colnames(df))] <- "Mu"
+  colnames(df)[grep("Sigma", colnames(df))] <- "Sigma"
+  colnames(df)[grep("Skew", colnames(df))] <- "Skew"
+  colnames(df)[grep("Shape", colnames(df))] <- "Shape"
+  
+  # Return tidy frame
+  tibble(
+    Date = as.Date(rownames(df)),
+    Realized = df$Realized,
+    Mu = df$Mu,
+    Sigma = df$Sigma,
+    Skew = if("Skew" %in% colnames(df)) df$Skew else NA,
+    Shape = if("Shape" %in% colnames(df)) df$Shape else NA,
+    Model = model,
+    Dist = dist
+  )
+}
+
+# Execution Loop (Sequential for safety, can be parallelized)
+cat("Starting Rolling Forecasts... (This may take a few minutes)\n")
+roll_results_list <- list()
+counter <- 1
+
+for(m in models) {
+  for(d in dists) {
+    cat(sprintf("Rolling [%d/12]: %s - %s\n", counter, m, d))
+    roll_results_list[[counter]] <- run_roll(m, d, ret, n_start, refit_every)
+    counter <- counter + 1
+  }
+}
+
+roll_data <- bind_rows(roll_results_list) %>% drop_na(Mu, Sigma)
+```
+
+
+```{r}
+# Helper: Analytical ES Calculator
+calc_exact_risk <- function(mu, sigma, skew, shape, dist, alpha) {
+  
+  # 1. Calculate Quantile (Standardized)
+  q_z <- switch(dist,
+    "norm" = qdist("norm", p = alpha, mu = 0, sigma = 1),
+    "std"  = qdist("std",  p = alpha, mu = 0, sigma = 1, shape = shape),
+    "sstd" = qdist("sstd", p = alpha, mu = 0, sigma = 1, skew = skew, shape = shape)
+  )
+  
+  # 2. Calculate ES (Standardized) via Integration
+  # We integrate the quantile function from 0 to alpha, then divide by alpha
+  es_z <- tryCatch({
+    integrate(function(x) {
+      switch(dist,
+        "norm" = qdist("norm", p = x, mu = 0, sigma = 1),
+        "std"  = qdist("std",  p = x, mu = 0, sigma = 1, shape = shape),
+        "sstd" = qdist("sstd", p = x, mu = 0, sigma = 1, skew = skew, shape = shape)
+      )
+    }, lower = 0, upper = alpha)$value / alpha
+  }, error = function(e) NA)
+  
+  # 3. Scale to Returns
+  VaR <- mu + sigma * q_z
+  ES  <- mu + sigma * es_z
+  
+  return(c(VaR, ES))
+}
+
+# Vectorizing the calculation is hard due to integration, so we use row-wise mapping
+# We calculate for 5% and 1%
+risk_forecasts <- roll_data %>%
+  mutate(
+    # 5% Level
+    Res_05 = pmap(list(Mu, Sigma, Skew, Shape, Dist), calc_exact_risk, alpha = 0.05),
+    VaR_95 = map_dbl(Res_05, 1),
+    ES_95  = map_dbl(Res_05, 2),
+    
+    # 1% Level
+    Res_01 = pmap(list(Mu, Sigma, Skew, Shape, Dist), calc_exact_risk, alpha = 0.01),
+    VaR_99 = map_dbl(Res_01, 1),
+    ES_99  = map_dbl(Res_01, 2)
+  ) %>%
+  select(-Res_05, -Res_01)
+
+head(risk_forecasts)
+```
+
+```{r}
+run_backtest <- function(realized, var_forecast, alpha) {
+  hits <- ifelse(realized < var_forecast, 1, 0)
+  T <- length(hits)
+  N <- sum(hits)
+  rate <- N / T
+  
+  # 1. Kupiec POF (Likelihood Ratio)
+  lr_pof <- -2 * ((T - N) * log(1 - alpha) + N * log(alpha) - 
+                  ((T - N) * log(1 - rate) + N * log(rate)))
+  # Handle edge case where N=0
+  if(is.nan(lr_pof)) lr_pof <- 0 
+  p_pof <- 1 - pchisq(lr_pof, df = 1)
+  
+  # 2. Christoffersen Independence
+  # Construct transition matrix
+  hits_lag <- hits[1:(T-1)]
+  hits_now <- hits[2:T]
+  
+  n00 <- sum(hits_lag == 0 & hits_now == 0)
+  n01 <- sum(hits_lag == 0 & hits_now == 1)
+  n10 <- sum(hits_lag == 1 & hits_now == 0)
+  n11 <- sum(hits_lag == 1 & hits_now == 1)
+  
+  pi0 <- n01 / (n00 + n01)
+  pi1 <- n11 / (n10 + n11)
+  pi  <- (n01 + n11) / (n00 + n01 + n10 + n11)
+  
+  # Likelihoods
+  L_null <- (1 - pi)^(n00 + n10) * pi^(n01 + n11)
+  L_alt  <- (1 - pi0)^n00 * pi0^n01 * (1 - pi1)^n10 * pi1^n11
+  
+  lr_ind <- -2 * log(L_null / L_alt)
+  if(is.nan(lr_ind) || is.infinite(lr_ind)) lr_ind <- 0
+  p_ind <- 1 - pchisq(lr_ind, df = 1)
+  
+  # 3. Conditional Coverage
+  lr_cc <- lr_pof + lr_ind
+  p_cc  <- 1 - pchisq(lr_cc, df = 2)
+  
+  return(tibble(
+    N_Violations = N,
+    Empirical_Rate = rate,
+    p_POF = p_pof,
+    p_IND = p_ind,
+    p_CC  = p_cc
+  ))
+}
+
+# Generate Results for 95%
+bt_95 <- risk_forecasts %>%
+  group_by(Model, Dist) %>%
+  summarise(metrics = list(run_backtest(Realized, VaR_95, 0.05)), .groups="drop") %>%
+  unnest(metrics) %>%
+  mutate(Target = "95%")
+
+# Generate Results for 99%
+bt_99 <- risk_forecasts %>%
+  group_by(Model, Dist) %>%
+  summarise(metrics = list(run_backtest(Realized, VaR_99, 0.01)), .groups="drop") %>%
+  unnest(metrics) %>%
+  mutate(Target = "99%")
+
+# Combine for display
+final_backtest <- bind_rows(bt_95, bt_99) %>%
+  arrange(Target, desc(p_CC))
+
+cat("\n--- Backtesting Results (Matches Tables 5 & 6) ---\n")
+print(knitr::kable(final_backtest, digits = 4))
+```
+
+```{r}
+# ES Violations and Gap
+es_stats <- risk_forecasts %>%
+  pivot_longer(cols = c(VaR_95, VaR_99), names_to = "VaR_Type", values_to = "VaR_Val") %>%
+  pivot_longer(cols = c(ES_95, ES_99), names_to = "ES_Type", values_to = "ES_Val") %>%
+  filter(str_sub(VaR_Type, -2) == str_sub(ES_Type, -2)) %>% # Match 95 to 95
+  mutate(Level = ifelse(grepl("99", VaR_Type), 0.99, 0.95)) %>%
+  group_by(Model, Dist, Level) %>%
+  summarise(
+    VaR_Viol_Rate = mean(Realized < VaR_Val),
+    ES_Viol_Rate  = mean(Realized < ES_Val),
+    Avg_Gap       = mean(ES_Val - VaR_Val), # Should be negative
+    .groups = "drop"
+  )
+
+print(knitr::kable(es_stats, digits = 4, caption = "Table 4 Logic: Coverage Comparison"))
+
+# Heatmap Plot (Figure 3)
+p_heatmap <- ggplot(es_stats, aes(x = Model, y = Dist, fill = Avg_Gap)) +
+  geom_tile(color = "white") +
+  facet_wrap(~Level, labeller = label_both) +
+  geom_text(aes(label = round(Avg_Gap, 3)), color = "black", size = 3) +
+  scale_fill_gradient2(low = "#3498db", mid = "white", high = "#e74c3c", midpoint = 0) +
+  labs(
+    title = "Average Gap: ES - VaR",
+    subtitle = "Negative values indicate ES is more conservative than VaR",
+    x = "Volatility Model", y = "Distribution", fill = "Gap"
+  ) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+print(p_heatmap)
+```
+
