@@ -23,4 +23,4 @@ Backtesting at the 95% and 99% confidence levels shows that models assuming heav
 
 Overall, the best-performing risk forecasts are obtained when combining asymmetric volatility dynamics with heavy-tailed distributions—particularly eGARCH with Student-t innovations—highlighting the importance of jointly modeling leverage effects and tail behavior in financial risk management.
 
-Please see thre results and full analysis report in analysis.md
+Please see the results and full analysis report in analysis.md
