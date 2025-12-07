@@ -13,14 +13,21 @@ The goal is to examine how model structure and distributional assumptions jointl
 
 ## Analysis & Key Findings
 
-This project conducts a comprehensive volatility and risk forecasting analysis for Amazon (AMZN) using daily returns from 2019–2025. The return series exhibits classic financial time-series features, which heavy tails, volatility clustering, and negligible linear autocorrelation, validated through descriptive statistics and ARCH diagnostics.
+### 1. Summary
 
-Four GARCH-family models (sGARCH, eGARCH, GJR-GARCH, apARCH) are estimated under Normal, Student-t, and skew-Student-t distributions. Heavy-tailed innovations substantially improve model fit, and asymmetric specifications consistently capture leverage effects observed in equity markets. Among all twelve model–distribution pairs, the eGARCH–Student-t and eGARCH–skew-t models achieve the lowest AIC/BIC and provide the most realistic persistence estimates, making them strong candidates for forward-looking risk evaluation.
+This project develops a complete volatility modeling and tail-risk forecasting framework for Amazon (AMZN) using daily returns from 2019–2025. The analysis compares four GARCH-family models (sGARCH, eGARCH, GJR-GARCH, apARCH) under multiple distributional assumptions (Normal, Student-t, skew-Student-t). A rolling-window forecasting system is implemented to generate out-of-sample estimates of Value-at-Risk (VaR) and Expected Shortfall (ES), followed by formal backtesting at 95% and 99% confidence levels. Results show that heavy-tailed distributions combined with asymmetric volatility models provide the most accurate risk forecasts, with eGARCH–Student-t emerging as the strongest overall performer.
 
-A rolling 1,000-day estimation window with 50-day refits is used to produce out-of-sample forecasts of Value-at-Risk (VaR) and Expected Shortfall (ES). Analytical computation of quantiles and tail expectations ensures stable and efficient risk estimates.
+### 2. Key Figures
+<img width="1344" height="960" alt="8853588274337230c615931623b2e5db" src="https://github.com/user-attachments/assets/8effc9fd-785e-4a70-abef-51ef4915530a" />
 
-Backtesting at the 95% and 99% confidence levels shows that models assuming heavy-tailed distributions significantly outperform Gaussian variants. Student-t and skew-t versions of eGARCH, GJR-GARCH, and sGARCH achieve violation rates closest to theoretical targets and pass conditional coverage tests, indicating strong reliability in extreme-loss prediction. ES consistently proves more conservative than VaR, particularly under heavy tails, reinforcing its value as a tail-risk metric.
+### 3. Final Conclusions
 
-Overall, the best-performing risk forecasts are obtained when combining asymmetric volatility dynamics with heavy-tailed distributions—particularly eGARCH with Student-t innovations—highlighting the importance of jointly modeling leverage effects and tail behavior in financial risk management.
+Across all model–distribution combinations, fat-tailed innovations (Student-t, skew-Student-t) significantly outperform Gaussian assumptions, capturing the heavy-tailed nature of AMZN returns. Asymmetric volatility models—particularly eGARCH—successfully detect leverage effects where negative shocks generate disproportionately higher volatility.
 
-Please see the results and full analysis report in analysis.md
+Rolling forecasting and backtesting results reinforce these findings. At both 95% and 99% confidence levels, eGARCH–t and eGARCH–skew-t achieve violation rates closest to theoretical targets and pass the Kupiec and Christoffersen tests for unconditional and conditional coverage. Expected Shortfall consistently provides more conservative tail estimates and demonstrates greater robustness to extreme events.
+
+Overall, the most reliable risk forecasts are obtained by combining:
+- **asymmetric volatility dynamics (eGARCH, GJR-GARCH), and**
+- **heavy-tailed distributions (Student-t, skew-t).**
+
+This highlights the importance of accurately modeling both volatility asymmetry and distributional tail risk in practical financial risk-management applications.
