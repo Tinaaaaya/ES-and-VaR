@@ -3,7 +3,7 @@
 - HTML output (AMZ—code.html)
 - full analysis report (analysis.pdf)
 
-## This project implements a comprehensive volatility modeling and tail-risk forecasting framework using:
+This project implements a comprehensive volatility modeling and tail-risk forecasting framework using:
 - Four GARCH-family models: sGARCH, eGARCH, GJR-GARCH, apARCH
 - Three innovation distributions: Gaussian, Student's t, Skewed Student's t
 - Two major risk measures: Value at Risk (VaR) and Expected Shortfall (ES)
